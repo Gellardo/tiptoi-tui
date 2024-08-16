@@ -1,131 +1,138 @@
 package main
 
 import (
-	"crypto/tls"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
-	"path"
-	"strings"
 
-	"github.com/PuerkitoBio/goquery"
+	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-func FindAudioLink(link string) ([]string, error) {
-	log.Printf("Looking for audio link: %s", link)
-	req, err := http.NewRequest("GET", link, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "curl")
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return nil, errors.New(fmt.Sprintf("Failed to GET %s - %d", link, res.StatusCode))
-	}
-
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	results := make([]string, 0)
-	doc.Find("a").Each(func(i int, s *goquery.Selection) {
-		download, found := s.Attr("href")
-		if !found {
-			return
-		}
-		if strings.Contains(download, ".gme") {
-			fmt.Printf("Downloadlink %d: '%s'\n", i, download)
-			results = append(results, download)
-		}
-	})
-	if len(results) == 0 {
-		return nil, errors.New("Couldn't find download link")
-	}
-	return results, nil
+type model struct {
+	list       list.Model
+	current    *Item
+	audiolinks []string
+	progress   int
+	err        error
 }
 
-func FindProductsFromService() []string {
-	link := "https://service.ravensburger.de/tiptoi%C2%AE/tiptoi%C2%AE_Audiodateien"
-	req, err := http.NewRequest("GET", link, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	req.Header.Set("User-Agent", "curl")
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+type updateCatalog int
+type checkItem []string
+type downloadAudio int
 
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+type errMsg struct{ err error }
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case updateCatalog:
+		items := FindProductsFromService()
+		// TODO there has to be a better way for this
+		listItems := make([]list.Item, 0)
+		for i := range items {
+			listItems = append(listItems, items[i])
+		}
+		m.list.SetItems(listItems)
+		log.Printf("got Catalog")
+		return m, nil
+
+	case checkItem:
+		m.audiolinks = msg
+		return m, nil
+	case downloadAudio:
+		m.progress = 100
+		return m, tea.Quit
+	case errMsg:
+		m.err = msg.err
+		return m, nil
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "enter":
+			if m.current == nil {
+				i, ok := m.list.SelectedItem().(Item)
+				if ok {
+					m.current = &i
+				}
+				return m, func() tea.Msg {
+					links, err := FindAudioLink(m.current.detailLink)
+					if err != nil {
+						return errMsg{err}
+					}
+					return checkItem(links)
+				}
+			} else if len(m.audiolinks) > 0 && m.progress == 0 {
+				m.progress = 1
+				return m, func() tea.Msg {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return errMsg{err}
+					}
+					err = DownloadFile(m.audiolinks[0], home+"/Downloads")
+					if err != nil {
+						return errMsg{err}
+					}
+					return downloadAudio(0)
+				}
+			}
+		}
+	case tea.WindowSizeMsg:
+		m.list.SetWidth(msg.Width)
+		return m, nil
 	}
 
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	results := make([]string, 0)
-	doc.Find(".mt-show-more-listing").Each(func(i int, s *goquery.Selection) {
-		rlink, _ := s.Find("a").Attr("href")
-		rname, _ := s.Find("a").Attr("title")
-		fmt.Printf("Result %d: %s - %s\n", i, rname, rlink)
-		results = append(results, rlink)
-	})
-	return results
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
 }
 
-func DownloadFile(link string, destinationDir string) error {
-	linkurl, err := url.Parse(link)
-	if err != nil {
-		return err
-	}
-	filename := path.Base(linkurl.Path)
-	file, err := os.Create(path.Join(destinationDir, filename))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+func (m model) View() string {
+	s := ""
+	style := m.list.Styles.FilterPrompt.Render
 
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	res, err := http.DefaultClient.Get(link)
-	if err != nil {
-		log.Fatal(err)
+	if len(m.list.Items()) == 0 {
+		s += style(fmt.Sprint("\n  Loading catalog... q to quit\n\n"))
+		return s
 	}
-	defer res.Body.Close()
 
-	_, err = io.Copy(file, res.Body)
-	log.Printf("written file to %s", file.Name())
+	s += style(fmt.Sprintf("\nhave %d items\n\n", len(m.list.Items())))
 
-	return err
+	if m.current == nil {
+		s += "\n" + m.list.View()
+		return s
+	}
+	s += style(fmt.Sprintf("\ncurrent: %s\n\n", m.current.name))
+
+	if len(m.audiolinks) == 0 {
+		s += style(fmt.Sprintf("\nno audio links\n\n"))
+	} else {
+		s += style(fmt.Sprintf("\naudio links: %d - Press Enter to download to ~/Downloads\n\n", len(m.audiolinks)))
+	}
+
+	s += style(fmt.Sprintf("\nprogress: %d\n\n", m.progress))
+	if m.err != nil {
+		s += m.list.Styles.StatusBarActiveFilter.Render(fmt.Sprintf("\nerror: %s\n\n", m.err))
+	}
+
+	return s
+}
+
+func initialModel() model {
+	listDelegate := list.NewDefaultDelegate()
+	listDelegate.ShowDescription = false
+	return model{list: list.New(make([]list.Item, 0), listDelegate, 50, 30)}
+}
+
+func (m model) Init() tea.Cmd {
+	return func() tea.Msg { return updateCatalog(0) }
 }
 
 func main() {
-	links := FindProductsFromService()
-	downloads, err := FindAudioLink(links[0])
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("found files: %s", downloads)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = DownloadFile(downloads[0], home+"/Downloads")
-	if err != nil {
-		log.Fatal(err)
+	if _, err := tea.NewProgram(initialModel()).Run(); err != nil {
+		fmt.Printf("Uh oh, there was an error: %v\n", err)
+		os.Exit(1)
 	}
 }
