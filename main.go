@@ -7,17 +7,20 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type model struct {
-	list       list.Model
-	current    *Item
-	audiolinks []string
-	progress   int
-	err        error
+	list        list.Model
+	catalog     int
+	current     *Item
+	audiolinks  []string
+	destination string
+	progress    int
+	err         error
 }
 
-type updateCatalog int
+type updateCatalog []list.Item
 type checkItem []string
 type downloadAudio int
 
@@ -27,13 +30,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case updateCatalog:
-		items := FindProductsFromService()
-		// TODO there has to be a better way for this
-		listItems := make([]list.Item, 0)
-		for i := range items {
-			listItems = append(listItems, items[i])
-		}
-		m.list.SetItems(listItems)
+		items := msg
+		m.list.SetItems(items)
+		m.catalog = len(items)
 		log.Printf("got Catalog")
 		return m, nil
 
@@ -49,7 +48,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c", "Esc":
 			return m, tea.Quit
 		case "enter":
 			if m.current == nil {
@@ -67,11 +66,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if len(m.audiolinks) > 0 && m.progress == 0 {
 				m.progress = 1
 				return m, func() tea.Msg {
-					home, err := os.UserHomeDir()
-					if err != nil {
-						return errMsg{err}
-					}
-					err = DownloadFile(m.audiolinks[0], home+"/Downloads")
+					err := DownloadFile(m.audiolinks[0], m.destination)
 					if err != nil {
 						return errMsg{err}
 					}
@@ -81,6 +76,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		m.list.SetWidth(msg.Width)
+		m.list.SetHeight(msg.Height / 2)
 		return m, nil
 	}
 
@@ -90,29 +86,64 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	s := ""
-	style := m.list.Styles.FilterPrompt.Render
+	filledBox := lipgloss.
+		NewStyle().Width(m.list.Width() - 5).
+		Foreground(lipgloss.Color("#04B575")).
+		Border(lipgloss.DoubleBorder()).
+		Render
+	unfilledBox := lipgloss.
+		NewStyle().
+		Width(m.list.Width() - 5).
+		Border(lipgloss.NormalBorder()).
+		Render
 
-	if len(m.list.Items()) == 0 {
-		s += style(fmt.Sprint("\n  Loading catalog... q to quit\n\n"))
-		return s
-	}
+	currentState := make([]string, 0)
 
-	s += style(fmt.Sprintf("\nhave %d items\n\n", len(m.list.Items())))
-
-	if m.current == nil {
-		s += "\n" + m.list.View()
-		return s
-	}
-	s += style(fmt.Sprintf("\ncurrent: %s\n\n", m.current.name))
-
-	if len(m.audiolinks) == 0 {
-		s += style(fmt.Sprintf("\nno audio links\n\n"))
+	if m.catalog > 0 {
+		currentState = append(currentState, filledBox(fmt.Sprintf("Found %d products", m.catalog)))
 	} else {
-		s += style(fmt.Sprintf("\naudio links: %d - Press Enter to download to ~/Downloads\n\n", len(m.audiolinks)))
+		currentState = append(currentState, unfilledBox("Loading products"))
 	}
 
-	s += style(fmt.Sprintf("\nprogress: %d\n\n", m.progress))
+	if m.current != nil {
+		currentState = append(currentState, filledBox(fmt.Sprintf("Product: %s", m.current.name)))
+	} else {
+		currentState = append(currentState, unfilledBox("Product:"))
+	}
+
+	if len(m.audiolinks) > 0 {
+		currentState = append(currentState, filledBox(fmt.Sprintf("DownloadLink: %s", m.audiolinks[0])))
+	} else {
+		currentState = append(currentState, unfilledBox("DownloadLink:"))
+	}
+
+	if len(m.destination) > 0 {
+		currentState = append(currentState, filledBox(fmt.Sprintf("Destination: %s", m.destination)))
+	} else {
+		currentState = append(currentState, unfilledBox("Destination:"))
+	}
+
+	if m.progress > 0 {
+		currentState = append(currentState, filledBox(fmt.Sprintf("Progress: %d / 100", m.progress)))
+	} else {
+		currentState = append(currentState, unfilledBox("Progress:"))
+	}
+
+	if m.catalog == 0 {
+		currentState = append(currentState,fmt.Sprint("\n  Loading catalog... Esc to quit\n\n")))
+	}
+
+	if len(m.audiolinks) > 0 && len(m.destination) > 0 {
+		currentState = append(currentState, "everything selected, press Enter to download")
+	}
+
+	s := ""
+	s += lipgloss.JoinVertical(
+		lipgloss.Top,
+		currentState...,
+		m.list.View()
+	)
+
 	if m.err != nil {
 		s += m.list.Styles.StatusBarActiveFilter.Render(fmt.Sprintf("\nerror: %s\n\n", m.err))
 	}
@@ -123,11 +154,25 @@ func (m model) View() string {
 func initialModel() model {
 	listDelegate := list.NewDefaultDelegate()
 	listDelegate.ShowDescription = false
-	return model{list: list.New(make([]list.Item, 0), listDelegate, 50, 30)}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	destination := home + "/Downloads"
+	return model{list: list.New(make([]list.Item, 0), listDelegate, 50, 30), destination: destination}
 }
 
 func (m model) Init() tea.Cmd {
-	return func() tea.Msg { return updateCatalog(0) }
+	return func() tea.Msg {
+		items := FindProductsFromService()
+
+		// TODO there has to be a better way for this
+		listItems := make([]list.Item, 0)
+		for i := range items {
+			listItems = append(listItems, items[i])
+		}
+		return updateCatalog(listItems)
+	}
 }
 
 func main() {
