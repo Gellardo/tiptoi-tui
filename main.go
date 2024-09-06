@@ -40,8 +40,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case checkItem:
-		m.list.SetItems(msg)
-		m.list.ResetSelected()
+		if len(msg) > 1 {
+			m.list.SetItems(msg)
+			m.list.ResetSelected()
+		} else {
+			link, ok := msg[0].(Item)
+			if !ok {
+				return m, func() tea.Msg { return errMsg{errors.New("Could not convert selected link to Item")} }
+			}
+			m.audiolink = &link
+			return m, m.triggerSelectDestination()
+		}
 		return m, nil
 	case selectedDestination:
 		m.destination = string(msg)
