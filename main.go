@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,14 +15,15 @@ type model struct {
 	list        list.Model
 	catalog     int
 	current     *Item
-	audiolinks  []string
+	audiolink   *Item
 	destination string
 	progress    int
 	err         error
 }
 
 type updateCatalog []list.Item
-type checkItem []string
+type checkItem []list.Item
+type selectedDestination string
 type downloadAudio int
 
 type errMsg struct{ err error }
@@ -32,13 +34,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateCatalog:
 		items := msg
 		m.list.SetItems(items)
+		m.list.ResetSelected()
 		m.catalog = len(items)
 		log.Printf("got Catalog")
 		return m, nil
 
 	case checkItem:
-		m.audiolinks = msg
+		m.list.SetItems(msg)
+		m.list.ResetSelected()
 		return m, nil
+	case selectedDestination:
+		m.destination = string(msg)
 	case downloadAudio:
 		m.progress = 100
 		return m, tea.Quit
@@ -51,27 +57,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "Esc":
 			return m, tea.Quit
 		case "enter":
-			if m.current == nil {
-				i, ok := m.list.SelectedItem().(Item)
-				if ok {
-					m.current = &i
-				}
-				return m, func() tea.Msg {
-					links, err := FindAudioLink(m.current.detailLink)
-					if err != nil {
-						return errMsg{err}
-					}
-					return checkItem(links)
-				}
-			} else if len(m.audiolinks) > 0 && m.progress == 0 {
+			// all information filled out
+			if m.audiolink != nil && len(m.destination) > 0 && m.progress == 0 {
 				m.progress = 1
 				return m, func() tea.Msg {
-					err := DownloadFile(m.audiolinks[0], m.destination)
+					err := DownloadFile(m.audiolink.detailLink, m.destination)
 					if err != nil {
 						return errMsg{err}
 					}
 					return downloadAudio(0)
 				}
+			}
+
+			// some list view is open
+			i, ok := m.list.SelectedItem().(Item)
+			if !ok {
+				return m, func() tea.Msg { return errMsg{errors.New("list selection failed?")} }
+			}
+			if m.current == nil {
+				m.current = &i
+				m.list.SetItems(nil)
+				return m, m.triggerFindAudioLinks()
+			} else if m.audiolink == nil {
+				m.audiolink = &i
+				m.list.SetItems(nil)
+				return m, m.triggerSelectDestination()
 			}
 		}
 	case tea.WindowSizeMsg:
@@ -111,8 +121,8 @@ func (m model) View() string {
 		currentState = append(currentState, unfilledBox("Product:"))
 	}
 
-	if len(m.audiolinks) > 0 {
-		currentState = append(currentState, filledBox(fmt.Sprintf("DownloadLink: %s", m.audiolinks[0])))
+	if m.audiolink != nil {
+		currentState = append(currentState, filledBox(fmt.Sprintf("DownloadLink: %s", m.audiolink)))
 	} else {
 		currentState = append(currentState, unfilledBox("DownloadLink:"))
 	}
@@ -130,18 +140,21 @@ func (m model) View() string {
 	}
 
 	if m.catalog == 0 {
-		currentState = append(currentState,fmt.Sprint("\n  Loading catalog... Esc to quit\n\n")))
+		currentState = append(currentState, fmt.Sprint("\n  Loading catalog... Esc to quit\n\n"))
 	}
 
-	if len(m.audiolinks) > 0 && len(m.destination) > 0 {
-		currentState = append(currentState, "everything selected, press Enter to download")
+	if m.audiolink != nil && len(m.destination) > 0 && m.progress == 0 {
+		currentState = append(currentState, lipgloss.NewStyle().Width(60).Height(5).Foreground(lipgloss.Color("#ee2200")).Align(lipgloss.Center, lipgloss.Center).Render("everything selected, press Enter to download"))
+	}
+
+	if len(m.list.Items()) > 0 {
+		currentState = append(currentState, m.list.View())
 	}
 
 	s := ""
 	s += lipgloss.JoinVertical(
 		lipgloss.Top,
 		currentState...,
-		m.list.View()
 	)
 
 	if m.err != nil {
@@ -154,24 +167,44 @@ func (m model) View() string {
 func initialModel() model {
 	listDelegate := list.NewDefaultDelegate()
 	listDelegate.ShowDescription = false
-	home, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	destination := home + "/Downloads"
-	return model{list: list.New(make([]list.Item, 0), listDelegate, 50, 30), destination: destination}
+	return model{list: list.New(make([]list.Item, 0), listDelegate, 50, 30)}
 }
 
 func (m model) Init() tea.Cmd {
 	return func() tea.Msg {
 		items := FindProductsFromService()
 
-		// TODO there has to be a better way for this
-		listItems := make([]list.Item, 0)
-		for i := range items {
-			listItems = append(listItems, items[i])
+		var listItems []list.Item
+		for _, item := range items {
+			listItems = append(listItems, item)
 		}
 		return updateCatalog(listItems)
+	}
+}
+
+func (m model) triggerFindAudioLinks() tea.Cmd {
+	return func() tea.Msg {
+		items, err := FindAudioLink(m.current.detailLink)
+		if err != nil {
+			return errMsg{err}
+		}
+
+		var listItems []list.Item
+		for _, item := range items {
+			listItems = append(listItems, item)
+		}
+		return checkItem(listItems)
+	}
+}
+
+func (m model) triggerSelectDestination() tea.Cmd {
+	return func() tea.Msg {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return errMsg{err}
+		}
+		destination := home + "/Downloads"
+		return selectedDestination(destination)
 	}
 }
 

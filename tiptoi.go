@@ -52,7 +52,7 @@ func load(link string) (io.ReadCloser, error) {
 	return res.Body, nil
 }
 
-func FindAudioLink(link string) ([]string, error) {
+func FindAudioLink(link string) ([]Item, error) {
 	//log.Printf("Looking for audio link: %s", link)
 	body, err := load(link)
 	if err != nil {
@@ -65,7 +65,7 @@ func FindAudioLink(link string) ([]string, error) {
 		return nil, err
 	}
 
-	results := make([]string, 0)
+	results := make([]Item, 0)
 	doc.Find("a").Each(func(i int, s *goquery.Selection) {
 		download, found := s.Attr("href")
 		if !found {
@@ -73,7 +73,7 @@ func FindAudioLink(link string) ([]string, error) {
 		}
 		if strings.Contains(download, ".gme") {
 			//fmt.Printf("Downloadlink %d: '%s'\n", i, download)
-			results = append(results, download)
+			results = append(results, Item{name: download, detailLink: download})
 		}
 	})
 	if len(results) == 0 {
