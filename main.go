@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,7 +25,7 @@ type model struct {
 
 type updateCatalog []list.Item
 type checkItem []list.Item
-type selectedDestination string
+type selectedDestination []list.Item
 type downloadAudio int
 
 type errMsg struct{ err error }
@@ -53,7 +55,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedDestination:
-		m.destination = string(msg)
+		if len(msg) > 1 {
+			m.list.SetItems(msg)
+			m.list.ResetSelected()
+		} else {
+			link, ok := msg[0].(Item)
+			if !ok {
+				return m, func() tea.Msg { return errMsg{errors.New("Could not convert destination to Item")} }
+			}
+			m.destination = link.detailLink
+		}
+		return m, nil
 	case downloadAudio:
 		m.progress = 100
 		return m, tea.Quit
@@ -72,6 +84,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg {
 					err := DownloadFile(m.audiolink.detailLink, m.destination)
 					if err != nil {
+						// TODO stop / retry?
 						return errMsg{err}
 					}
 					return downloadAudio(0)
@@ -91,6 +104,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.audiolink = &i
 				m.list.SetItems(nil)
 				return m, m.triggerSelectDestination()
+			} else if m.destination == "" {
+				m.destination = i.detailLink
+				m.list.SetItems(nil)
+				return m, nil
 			}
 		}
 	case tea.WindowSizeMsg:
@@ -213,8 +230,38 @@ func (m model) triggerSelectDestination() tea.Cmd {
 			return errMsg{err}
 		}
 		destination := home + "/Downloads"
-		return selectedDestination(destination)
+
+		paths, err := possibleDownloadLocations()
+		if err != nil {
+			return errMsg{err}
+		}
+
+		var listItems []list.Item
+		for _, item := range paths {
+			listItems = append(listItems, item)
+		}
+		listItems = append(listItems, Item{name: "Downloads", detailLink: destination})
+		return selectedDestination(listItems)
 	}
+}
+
+func possibleDownloadLocations() ([]Item, error) {
+	cmd := exec.Command("mount")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var list []Item
+	for _, line := range strings.Split(string(out), "\n") {
+		if subline := strings.Split(line, " "); len(subline) >= 3 &&
+			(strings.HasPrefix(subline[2], "/Volumes/") ||
+				strings.HasPrefix(subline[2], "/run/media")) {
+			path := strings.Split(subline[2], "/")
+			list = append(list, Item{name: path[len(path)-1], detailLink: subline[2]})
+		}
+	}
+	return list, nil
 }
 
 func main() {
