@@ -1,0 +1,45 @@
+name: Build Executables
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            GOOS: linux
+            GOARCH: amd64
+          - os: macos-latest
+            GOOS: darwin
+            GOARCH: amd64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.22
+
+    - name: Build
+      run: |
+        echo "Building for ${{ matrix.GOOS }}"
+        GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o tiptoi-tui-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: tiptoi-tui-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
+        path: tiptoi-tui-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
