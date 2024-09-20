@@ -231,10 +231,7 @@ func (m model) triggerSelectDestination() tea.Cmd {
 		}
 		destination := home + "/Downloads"
 
-		paths, err := possibleDownloadLocations()
-		if err != nil {
-			return errMsg{err}
-		}
+		paths := possibleDownloadLocations()
 
 		var listItems []list.Item
 		for _, item := range paths {
@@ -245,23 +242,25 @@ func (m model) triggerSelectDestination() tea.Cmd {
 	}
 }
 
-func possibleDownloadLocations() ([]Item, error) {
+func possibleDownloadLocations() []Item {
 	cmd := exec.Command("mount")
 	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
 
 	var list []Item
+	if err != nil {
+		return list
+	}
+
 	for _, line := range strings.Split(string(out), "\n") {
 		if subline := strings.Split(line, " "); len(subline) >= 3 &&
 			(strings.HasPrefix(subline[2], "/Volumes/") ||
-				strings.HasPrefix(subline[2], "/run/media")) {
+				strings.HasPrefix(subline[2], "/media/") ||
+				strings.HasPrefix(subline[2], "/run/media/")) {
 			path := strings.Split(subline[2], "/")
 			list = append(list, Item{name: path[len(path)-1], detailLink: subline[2]})
 		}
 	}
-	return list, nil
+	return list
 }
 
 func main() {
