@@ -37,6 +37,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		items := msg
 		m.list.SetItems(items)
 		m.list.ResetSelected()
+		m.list.ResetFilter()
 		m.catalog = len(items)
 		log.Printf("got Catalog")
 		return m, nil
@@ -45,6 +46,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg) > 1 {
 			m.list.SetItems(msg)
 			m.list.ResetSelected()
+			m.list.ResetFilter()
 		} else {
 			link, ok := msg[0].(Item)
 			if !ok {
@@ -58,6 +60,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg) > 1 {
 			m.list.SetItems(msg)
 			m.list.ResetSelected()
+			m.list.ResetFilter()
 		} else {
 			link, ok := msg[0].(Item)
 			if !ok {
@@ -148,7 +151,7 @@ func (m model) View() string {
 	}
 
 	if m.audiolink != nil {
-		currentState = append(currentState, filledBox(fmt.Sprintf("DownloadLink: %s", m.audiolink)))
+		currentState = append(currentState, filledBox(fmt.Sprintf("DownloadLink: %s", m.audiolink.name)))
 	} else {
 		currentState = append(currentState, unfilledBox("DownloadLink:"))
 	}
